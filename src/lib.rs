@@ -238,7 +238,7 @@ impl Drop for State {
         let initialized = self.initialized.get_mut();
 
         if matches!(*initialized, Self::INITIALIZED | Self::INITIALIZING) {
-            *initialized = Self::INITIALIZING;
+            *initialized = Self::UNINITIALIZED;
 
             unsafe { self.inner.get_mut().assume_init_drop() };
         }

@@ -157,7 +157,7 @@ impl State {
     /// assert_eq!(foo.bar, 42);
     /// ```
     #[must_use]
-    pub fn get<T: Send + Sync + 'static>(&self) -> StateRef<'_, T> {
+    pub fn get<T: Sync + 'static>(&self) -> StateRef<'_, T> {
         match self.initialized.load(std::sync::atomic::Ordering::Acquire) {
             Self::INITIALIZED => {}
             Self::INITIALIZING => panic!("State not yet initialized"),
@@ -214,7 +214,7 @@ impl State {
     /// assert!(str.is_none());
     /// ```
     #[must_use]
-    pub fn try_get<T: Send + Sync + 'static>(&self) -> Option<StateRef<'_, T>> {
+    pub fn try_get<T: Sync + 'static>(&self) -> Option<StateRef<'_, T>> {
         if self.initialized.load(std::sync::atomic::Ordering::Acquire) != Self::INITIALIZED {
             return None;
         }
@@ -310,11 +310,11 @@ impl std::fmt::Debug for StateLifetime {
 /// when initializing the [`State`] via [`State::init`] or [`State::try_init`].
 #[derive(Default)]
 pub struct StateRegistry {
-    map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    map: HashMap<TypeId, Box<dyn Any>>,
 }
 impl StateRegistry {
     /// Inserts a value into the state.
-    pub fn insert<T: Send + Sync + 'static>(&mut self, value: T) {
+    pub fn insert<T: Sync + 'static>(&mut self, value: T) {
         self.map.insert(TypeId::of::<T>(), Box::new(value));
     }
 }
@@ -450,4 +450,50 @@ fn test_state_already_initialized() {
     let state = State::new();
     let _ = state.init(|_| {});
     let _ = state.init(|_| {});
+}
+
+#[test]
+fn test_state_across_threads() {
+    static STATE: State = State::new();
+
+    struct Foo {
+        bar: AtomicU8,
+    }
+
+    let _lifetime = STATE.init(|state| {
+        state.insert(Foo {
+            bar: AtomicU8::new(0),
+        });
+    });
+
+    let thread_count = 10;
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(thread_count));
+
+    let threads = (0..thread_count)
+        .map(|_| {
+            let barrier_ref = barrier.clone();
+
+            std::thread::spawn(move || {
+                barrier_ref.wait();
+
+                STATE
+                    .get::<Foo>()
+                    .bar
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for thread in threads {
+        thread.join().unwrap();
+    }
+
+    assert_eq!(
+        STATE
+            .get::<Foo>()
+            .bar
+            .load(std::sync::atomic::Ordering::Acquire),
+        thread_count as u8
+    );
 }

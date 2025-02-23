@@ -49,7 +49,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
-          components: miri
+          components: miri rust-src
 
       - name: Setup cache
         uses: Swatinem/rust-cache@v2

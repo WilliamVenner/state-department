@@ -213,7 +213,7 @@ impl State {
     /// assert_eq!(foo.bar, 42);
     /// ```
     #[must_use]
-    pub fn get<T: Sync + 'static>(&self) -> StateRef<'_, T> {
+    pub fn get<T: Send + Sync + 'static>(&self) -> StateRef<'_, T> {
         if self.initialized.load(std::sync::atomic::Ordering::Acquire) != Self::INITIALIZED {
             panic!("State not yet initialized");
         }
@@ -267,7 +267,7 @@ impl State {
     /// assert!(str.is_none());
     /// ```
     #[must_use]
-    pub fn try_get<T: Sync + 'static>(&self) -> Option<StateRef<'_, T>> {
+    pub fn try_get<T: Send + Sync + 'static>(&self) -> Option<StateRef<'_, T>> {
         if self.initialized.load(std::sync::atomic::Ordering::Acquire) != Self::INITIALIZED {
             return None;
         }
@@ -410,12 +410,12 @@ impl<T> Deref for StateRef<'_, T> {
 /// when initializing the [`State`] via [`State::init`] or [`State::try_init`].
 #[derive(Default)]
 pub struct StateRegistry {
-    map: HashMap<TypeId, Box<dyn Any + Sync>>,
+    map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     _not_send: PhantomData<*mut ()>,
 }
 impl StateRegistry {
     /// Inserts a value into the state.
-    pub fn insert<T: Sync + 'static>(&mut self, value: T) {
+    pub fn insert<T: Send + Sync + 'static>(&mut self, value: T) {
         self.map.insert(TypeId::of::<T>(), Box::new(value));
     }
 
@@ -455,7 +455,7 @@ impl StateRegistry {
 
 struct LazyState<T: 'static>(LazyLock<T>);
 impl<T> LazyState<T> {
-    fn downcast_ref_lazy(v: &Box<dyn Any + Sync>) -> Option<&T> {
+    fn downcast_ref_lazy(v: &Box<dyn Any + Send + Sync>) -> Option<&T> {
         let v = v.as_ref() as &dyn Any;
 
         v.downcast_ref::<T>()

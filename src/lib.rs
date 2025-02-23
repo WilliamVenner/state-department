@@ -13,7 +13,7 @@ use std::{
 
 /// The state manager.
 pub struct State {
-    inner: UnsafeCell<MaybeUninit<Weak<StateRegistry>>>,
+    state: UnsafeCell<MaybeUninit<Weak<StateRegistry>>>,
     initialized: AtomicU8,
 }
 impl State {
@@ -32,7 +32,7 @@ impl State {
     /// ```
     pub const fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(MaybeUninit::uninit()),
+            state: UnsafeCell::new(MaybeUninit::uninit()),
             initialized: AtomicU8::new(Self::UNINITIALIZED),
         }
     }
@@ -60,12 +60,13 @@ impl State {
     /// });
     ///
     /// assert_eq!(STATE.get::<Foo>().bar, 42);
+    /// ```
     pub fn init<F>(&self, init: F) -> StateLifetime
     where
         F: FnOnce(&mut StateRegistry),
     {
-        self.try_init(|inner| {
-            init(inner);
+        self.try_init(|state| {
+            init(state);
 
             Ok::<_, ()>(())
         })
@@ -91,42 +92,97 @@ impl State {
     /// });
     ///
     /// assert!(lifetime.is_err());
+    /// ```
     pub fn try_init<E, F>(&self, init: F) -> Result<StateLifetime, E>
     where
         F: FnOnce(&mut StateRegistry) -> Result<(), E>,
     {
-        if self
-            .initialized
-            .compare_exchange(
-                Self::UNINITIALIZED,
-                Self::INITIALIZING,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_err()
-        {
-            panic!("State already initialized or is currently initializing");
-        }
+        self.start_init();
 
-        let mut result = Ok(());
+        let mut state = StateRegistry::default();
 
-        let inner = Arc::new_cyclic(|weak| {
-            unsafe { (*self.inner.get()).write(weak.clone()) };
+        init(&mut state)?;
 
-            let mut inner = StateRegistry::default();
+        Ok(self.finish_init(state))
+    }
 
-            result = init(&mut inner);
+    /// Initializes the [`State`] asynchronously, giving you an entrypoint for
+    /// populating the state with your desired values in an asynchronous
+    /// context.
+    ///
+    /// # Panics
+    ///
+    /// * If the state has already been initialized.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use state_department::State;
+    ///
+    /// static STATE: State = State::new();
+    ///
+    /// struct Foo {
+    ///     bar: i32
+    /// }
+    ///
+    /// # tokio_test::block_on(async {
+    /// let _lifetime = STATE.init_async(async |state| {
+    ///     state.insert(Foo { bar: 42 });
+    /// })
+    /// .await;
+    ///
+    /// assert_eq!(STATE.get::<Foo>().bar, 42);
+    /// # });
+    /// ```
+    pub async fn init_async<F>(&self, init: F) -> StateLifetime
+    where
+        F: AsyncFnOnce(&mut StateRegistry),
+    {
+        self.try_init_async(async |state: &mut StateRegistry| {
+            init(state).await;
 
-            inner.map.shrink_to_fit();
-            inner
-        });
+            Ok::<_, ()>(())
+        })
+        .await
+        .unwrap()
+    }
 
-        result?;
+    /// Initializes the [`State`] asynchronously, giving you a **fallible**
+    /// entrypoint for populating the state with your desired values in an
+    /// asynchronous context.
+    ///
+    /// # Panics
+    ///
+    /// * If the state has already been initialized.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use state_department::State;
+    ///
+    /// static STATE: State = State::new();
+    ///
+    /// # tokio_test::block_on(async {
+    /// let lifetime = STATE.try_init_async(async |state| {
+    /// #   state.insert(());
+    ///
+    ///     Err("oh no!")
+    /// });
+    ///
+    /// assert!(lifetime.await.is_err());
+    /// # });
+    /// ```
+    pub async fn try_init_async<E, F>(&self, init: F) -> Result<StateLifetime, E>
+    where
+        F: AsyncFnOnce(&mut StateRegistry) -> Result<(), E>,
+    {
+        self.start_init();
 
-        self.initialized
-            .store(Self::INITIALIZED, std::sync::atomic::Ordering::Release);
+        let mut state = StateRegistry::default();
 
-        Ok(StateLifetime { inner: Some(inner) })
+        init(&mut state).await?;
+
+        Ok(self.finish_init(state))
     }
 
     /// Returns a reference to a value stored in the state.
@@ -158,19 +214,16 @@ impl State {
     /// ```
     #[must_use]
     pub fn get<T: Sync + 'static>(&self) -> StateRef<'_, T> {
-        match self.initialized.load(std::sync::atomic::Ordering::Acquire) {
-            Self::INITIALIZED => {}
-            Self::INITIALIZING => panic!("State not yet initialized"),
-            Self::UNINITIALIZED => panic!("State not yet initialized"),
-            _ => unreachable!(),
+        if self.initialized.load(std::sync::atomic::Ordering::Acquire) != Self::INITIALIZED {
+            panic!("State not yet initialized");
         }
 
-        let inner = match unsafe { (*self.inner.get()).assume_init_ref() }.upgrade() {
-            Some(inner) => inner,
+        let state = match unsafe { (*self.state.get()).assume_init_ref() }.upgrade() {
+            Some(state) => state,
             None => panic!("State dropped"),
         };
 
-        let v: &T = match inner
+        let v: &T = match state
             .map
             .get(&TypeId::of::<T>())
             .and_then(|v| LazyState::downcast_ref_lazy(v))
@@ -180,8 +233,8 @@ impl State {
         };
 
         StateRef {
-            ptr: v,
-            _life: inner,
+            value: v,
+            _state: state,
             _phantom: PhantomData,
         }
     }
@@ -219,28 +272,58 @@ impl State {
             return None;
         }
 
-        let inner = unsafe { (*self.inner.get()).assume_init_ref() }.upgrade()?;
+        let state = unsafe { (*self.state.get()).assume_init_ref() }.upgrade()?;
 
-        let v: &T = inner
+        let value: &T = state
             .map
             .get(&TypeId::of::<T>())
             .and_then(|v| LazyState::downcast_ref_lazy(v))?;
 
         Some(StateRef {
-            ptr: v,
-            _life: inner,
+            value,
+            _state: state,
             _phantom: PhantomData,
         })
+    }
+
+    fn start_init(&self) {
+        if self
+            .initialized
+            .compare_exchange(
+                Self::UNINITIALIZED,
+                Self::INITIALIZING,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            panic!("State already initialized or is currently initializing");
+        }
+    }
+
+    fn finish_init(&self, mut state: StateRegistry) -> StateLifetime {
+        state.map.shrink_to_fit();
+
+        // https://github.com/rust-lang/rust-clippy/issues/11382
+        #[allow(clippy::arc_with_non_send_sync)]
+        let state = Arc::new(state);
+
+        unsafe { (*self.state.get()).write(Arc::downgrade(&state)) };
+
+        self.initialized
+            .store(Self::INITIALIZED, std::sync::atomic::Ordering::Release);
+
+        StateLifetime { state: Some(state) }
     }
 }
 impl Drop for State {
     fn drop(&mut self) {
         let initialized = self.initialized.get_mut();
 
-        if matches!(*initialized, Self::INITIALIZED | Self::INITIALIZING) {
+        if *initialized == Self::INITIALIZED {
             *initialized = Self::UNINITIALIZED;
 
-            unsafe { self.inner.get_mut().assume_init_drop() };
+            unsafe { self.state.get_mut().assume_init_drop() };
         }
     }
 }
@@ -249,7 +332,6 @@ impl Default for State {
         Self::new()
     }
 }
-unsafe impl Send for State {}
 unsafe impl Sync for State {}
 
 /// This is the lifetime of your state. If this value is dropped, your state
@@ -266,36 +348,36 @@ unsafe impl Sync for State {}
 /// until the corresponding [`State`] is dropped.
 #[must_use]
 pub struct StateLifetime {
-    inner: Option<Arc<StateRegistry>>,
+    state: Option<Arc<StateRegistry>>,
 }
 impl StateLifetime {
     /// Attempts to drop the state, returning the [`StateLifetime`] as an
     /// [`Err`] if there are still held references.
     pub fn try_drop(mut self) -> Result<(), Self> {
-        let Some(inner) = self.inner.take() else {
+        let Some(state) = self.state.take() else {
             return Err(self);
         };
 
-        let Some(mut inner) = Arc::into_inner(inner) else {
+        let Some(mut state) = Arc::into_inner(state) else {
             return Err(self);
         };
 
-        inner.map.clear();
+        state.map.clear();
 
         Ok(())
     }
 }
 impl Drop for StateLifetime {
     fn drop(&mut self) {
-        let Some(inner) = self.inner.take() else {
+        let Some(state) = self.state.take() else {
             return;
         };
 
-        let Some(mut inner) = Arc::into_inner(inner) else {
+        let Some(mut state) = Arc::into_inner(state) else {
             return;
         };
 
-        inner.map.clear();
+        state.map.clear();
     }
 }
 impl std::fmt::Debug for StateLifetime {
@@ -309,16 +391,16 @@ impl std::fmt::Debug for StateLifetime {
 /// Whilst this is held, [`StateLifetime::try_drop`] will return its [`Err`]
 /// variant, and dropping the [`State`] will not drop the values held within it.
 pub struct StateRef<'a, T> {
-    _life: Arc<StateRegistry>,
+    _state: Arc<StateRegistry>,
     _phantom: std::marker::PhantomData<&'a ()>,
-    ptr: *const T,
+    value: *const T,
 }
 impl<T> Deref for StateRef<'_, T> {
     type Target = T;
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.ptr }
+        unsafe { &*self.value }
     }
 }
 
@@ -328,7 +410,8 @@ impl<T> Deref for StateRef<'_, T> {
 /// when initializing the [`State`] via [`State::init`] or [`State::try_init`].
 #[derive(Default)]
 pub struct StateRegistry {
-    map: HashMap<TypeId, Box<dyn Any>>,
+    map: HashMap<TypeId, Box<dyn Any + Sync>>,
+    _not_send: PhantomData<*mut ()>,
 }
 impl StateRegistry {
     /// Inserts a value into the state.
@@ -338,10 +421,6 @@ impl StateRegistry {
 
     /// Inserts a value into the state that is initialized lazily (when first
     /// accessed.)
-    ///
-    /// Note that this function can deadlock if, during lazy initialization,
-    /// you attempt to access another lazy-initialized value that is already
-    /// currently being lazily initialized.
     ///
     /// # Example
     ///
@@ -368,7 +447,7 @@ impl StateRegistry {
     ///
     /// // > Initializing Foo...
     /// ```
-    pub fn insert_lazy<T: Sync + 'static>(&mut self, init: fn() -> T) {
+    pub fn insert_lazy<T: Send + Sync + 'static>(&mut self, init: fn() -> T) {
         self.map
             .insert(TypeId::of::<T>(), Box::new(LazyState(LazyLock::new(init))));
     }
@@ -376,7 +455,9 @@ impl StateRegistry {
 
 struct LazyState<T: 'static>(LazyLock<T>);
 impl<T> LazyState<T> {
-    fn downcast_ref_lazy(v: &Box<dyn Any>) -> Option<&T> {
+    fn downcast_ref_lazy(v: &Box<dyn Any + Sync>) -> Option<&T> {
+        let v = v.as_ref() as &dyn Any;
+
         v.downcast_ref::<T>()
             .or_else(|| v.downcast_ref::<LazyState<T>>().map(|v| &*v.0))
     }
@@ -394,12 +475,12 @@ fn test_state() {
         qux: i32,
     }
 
-    let lifetime = state.init(|inner| {
-        inner.insert(Foo {
+    let lifetime = state.init(|state| {
+        state.insert(Foo {
             bar: AtomicU8::new(42),
         });
 
-        inner.insert(Baz { qux: 24 });
+        state.insert(Baz { qux: 24 });
     });
 
     {
@@ -431,8 +512,8 @@ fn test_state_drop_with_ref() {
 
     struct Foo;
 
-    let lifetime = state.init(|inner| {
-        inner.insert(Foo);
+    let lifetime = state.init(|state| {
+        state.insert(Foo);
     });
 
     let _foo = state.get::<Foo>();
@@ -446,8 +527,8 @@ fn test_state_use_after_lifetime_drop() {
 
     struct Foo;
 
-    let lifetime = state.init(|inner| {
-        inner.insert(Foo);
+    let lifetime = state.init(|state| {
+        state.insert(Foo);
     });
 
     lifetime.try_drop().unwrap();
@@ -468,8 +549,8 @@ fn test_state_drop_without_lifetime() {
         }
     }
 
-    let lifetime = state.init(|inner| {
-        inner.insert(Foo);
+    let lifetime = state.init(|state| {
+        state.insert(Foo);
     });
 
     let foo = state.get::<Foo>();
@@ -499,8 +580,8 @@ fn test_lazy_initialization() {
         bar: i32,
     }
 
-    let _lifetime = state.init(|inner| {
-        inner.insert_lazy(|| {
+    let _lifetime = state.init(|state| {
+        state.insert_lazy(|| {
             FOO_INITIALIZED.store(1, std::sync::atomic::Ordering::Release);
 
             Foo { bar: 42 }
@@ -520,6 +601,24 @@ fn test_lazy_initialization() {
     );
 
     assert_eq!(foo.bar, 42);
+}
+
+#[test]
+#[should_panic = "State not yet initialized"]
+fn test_state_get_inside_init() {
+    let state = State::new();
+    let _ = state.init(|_| {
+        let _ = state.get::<()>();
+    });
+}
+
+#[test]
+#[should_panic = "State already initialized or is currently initializing"]
+fn test_state_init_inside_init() {
+    let state = State::new();
+    let _ = state.init(|_| {
+        let _ = state.init(|_| {});
+    });
 }
 
 #[test]

@@ -17,6 +17,8 @@ said state.
 
 -   **Thread Safe**: The state manager can be accessed from multiple threads
     simultaneously.
+-   **Async Initialization**: The state manager can be initialized
+    asynchronously via [`State::init_async`] and [`State::try_init_async`].
 -   **Graceful Dropping**: Global state can be gracefully dropped when it is no
     longer needed, returning whether there are still held references to the state.
 -   **Lazy Initialization**: Global state can be initialized immediately or lazily
@@ -90,7 +92,7 @@ let foo = STATE.get::<Foo>();
 
 assert_eq!(foo.bar, 42);
 
-// Make sure we're not holding a reference to the state.
+// Make sure we're not holding a reference to the state (via `foo`).
 drop(foo);
 
 // Gracefully drop the global state.

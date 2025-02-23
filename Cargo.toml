@@ -8,3 +8,6 @@ repository = "https://github.com/WilliamVenner/state-department"
 keywords = ["state", "management", "dependency", "injection", "global"]
 categories = ["rust-patterns", "memory-management"]
 authors = ["William Venner <william@venner.io>"]
+
+[dev-dependencies]
+tokio-test = "0.4"

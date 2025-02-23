@@ -1,0 +1,10 @@
+[package]
+name = "state-department"
+version = "0.1.0"
+edition = "2021"
+description = "An implementation of state management and dependency injection in Rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/WilliamVenner/state-department"
+keywords = ["state", "management", "dependency", "injection", "global"]
+categories = ["rust-patterns", "memory-management"]
+authors = ["William Venner <william@venner.io>"]

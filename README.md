@@ -13,6 +13,15 @@ to access shared state across many different parts of your program,
 perhaps with the additional desire to gracefully shutdown/destruct/drop
 said state.
 
+# Features
+
+-   **Thread Safe**: The state manager can be accessed from multiple threads
+    simultaneously.
+-   **Graceful Dropping**: Global state can be gracefully dropped when it is no
+    longer needed, returning whether there are still held references to the state.
+-   **Lazy Initialization**: Global state can be initialized immediately or lazily
+    via [`StateRegistry::insert_lazy`].
+
 # Example Use Case
 
 Imagine your program makes use of an SQLite database stored on disk, and you

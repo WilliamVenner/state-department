@@ -8,7 +8,7 @@ use std::{
     marker::PhantomData,
     mem::MaybeUninit,
     ops::Deref,
-    sync::{atomic::AtomicU8, Arc, Weak},
+    sync::{atomic::AtomicU8, Arc, LazyLock, Weak},
 };
 
 /// The state manager.
@@ -173,7 +173,7 @@ impl State {
         let v: &T = match inner
             .map
             .get(&TypeId::of::<T>())
-            .and_then(|v| v.downcast_ref())
+            .and_then(|v| LazyState::downcast_ref_lazy(v))
         {
             Some(v) => v,
             None => panic!("State for {:?} not found", std::any::type_name::<T>()),
@@ -224,7 +224,7 @@ impl State {
         let v: &T = inner
             .map
             .get(&TypeId::of::<T>())
-            .and_then(|v| v.downcast_ref())?;
+            .and_then(|v| LazyState::downcast_ref_lazy(v))?;
 
         Some(StateRef {
             ptr: v,
@@ -304,21 +304,6 @@ impl std::fmt::Debug for StateLifetime {
     }
 }
 
-/// The registry of values stored in the [`State`].
-///
-/// You will be given an opportunity to populate this with your desired values
-/// when initializing the [`State`] via [`State::init`] or [`State::try_init`].
-#[derive(Default)]
-pub struct StateRegistry {
-    map: HashMap<TypeId, Box<dyn Any>>,
-}
-impl StateRegistry {
-    /// Inserts a value into the state.
-    pub fn insert<T: Sync + 'static>(&mut self, value: T) {
-        self.map.insert(TypeId::of::<T>(), Box::new(value));
-    }
-}
-
 /// A held reference to something in the [`State`].
 ///
 /// Whilst this is held, [`StateLifetime::try_drop`] will return its [`Err`]
@@ -334,6 +319,66 @@ impl<T> Deref for StateRef<'_, T> {
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.ptr }
+    }
+}
+
+/// The registry of values stored in the [`State`].
+///
+/// You will be given an opportunity to populate this with your desired values
+/// when initializing the [`State`] via [`State::init`] or [`State::try_init`].
+#[derive(Default)]
+pub struct StateRegistry {
+    map: HashMap<TypeId, Box<dyn Any>>,
+}
+impl StateRegistry {
+    /// Inserts a value into the state.
+    pub fn insert<T: Sync + 'static>(&mut self, value: T) {
+        self.map.insert(TypeId::of::<T>(), Box::new(value));
+    }
+
+    /// Inserts a value into the state that is initialized lazily (when first
+    /// accessed.)
+    ///
+    /// Note that this function can deadlock if, during lazy initialization,
+    /// you attempt to access another lazy-initialized value that is already
+    /// currently being lazily initialized.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use state_department::State;
+    ///
+    /// static STATE: State = State::new();
+    ///
+    /// struct Foo {
+    ///     bar: i32
+    /// }
+    ///
+    /// let _lifetime = STATE.init(|state| {
+    ///     state.insert_lazy(|| {
+    ///         println!("Initializing Foo...");
+    ///
+    ///         // Something expensive or long-running...
+    ///
+    ///         Foo { bar: 42 }
+    ///     });
+    /// });
+    ///
+    /// let foo = STATE.get::<Foo>();
+    ///
+    /// // > Initializing Foo...
+    /// ```
+    pub fn insert_lazy<T: Sync + 'static>(&mut self, init: fn() -> T) {
+        self.map
+            .insert(TypeId::of::<T>(), Box::new(LazyState(LazyLock::new(init))));
+    }
+}
+
+struct LazyState<T: 'static>(LazyLock<T>);
+impl<T> LazyState<T> {
+    fn downcast_ref_lazy(v: &Box<dyn Any>) -> Option<&T> {
+        v.downcast_ref::<T>()
+            .or_else(|| v.downcast_ref::<LazyState<T>>().map(|v| &*v.0))
     }
 }
 
@@ -442,6 +487,39 @@ fn test_state_drop_without_lifetime() {
     drop(state);
 
     assert_eq!(DROPPED.load(std::sync::atomic::Ordering::Acquire), 1);
+}
+
+#[test]
+fn test_lazy_initialization() {
+    static FOO_INITIALIZED: AtomicU8 = AtomicU8::new(0);
+
+    let state = State::new();
+
+    struct Foo {
+        bar: i32,
+    }
+
+    let _lifetime = state.init(|inner| {
+        inner.insert_lazy(|| {
+            FOO_INITIALIZED.store(1, std::sync::atomic::Ordering::Release);
+
+            Foo { bar: 42 }
+        });
+    });
+
+    assert_eq!(
+        FOO_INITIALIZED.load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+
+    let foo = state.get::<Foo>();
+
+    assert_eq!(
+        FOO_INITIALIZED.load(std::sync::atomic::Ordering::Acquire),
+        1
+    );
+
+    assert_eq!(foo.bar, 42);
 }
 
 #[test]

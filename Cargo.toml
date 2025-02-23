@@ -9,5 +9,12 @@ keywords = ["state", "management", "dependency", "injection", "global"]
 categories = ["rust-patterns", "memory-management"]
 authors = ["William Venner <william@venner.io>"]
 
+[features]
+async = ["async-once-cell"]
+
+[dependencies]
+async-once-cell = { version = "0.5.4", optional = true }
+
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "sync"] }
 tokio-test = "0.4"

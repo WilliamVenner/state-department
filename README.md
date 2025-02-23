@@ -18,11 +18,12 @@ said state.
 -   **Thread Safe**: The state manager can be accessed from multiple threads
     simultaneously.
 -   **Async Initialization**: The state manager can be initialized
-    asynchronously via [`State::init_async`] and [`State::try_init_async`].
+    asynchronously via [`StateManager::init_async`] and
+    [`StateManager::try_init_async`].
 -   **Graceful Dropping**: Global state can be gracefully dropped when it is no
     longer needed, returning whether there are still held references to the state.
 -   **Lazy Initialization**: Global state can be initialized immediately or lazily
-    via [`StateRegistry::insert_lazy`].
+    via [`StateRegistry::insert_lazy`] or [`StateRegistry::insert_async_lazy`].
 
 # Example Use Case
 
@@ -41,7 +42,7 @@ ergonomic way to manage global state in your program, with the ability to
 gracefully drop the global state when your program exits.
 
 In this example use case, you could use `state-department` to store the
-database connection in [`State`], and then gracefully drop the state when
+database connection in [`StateManager`], and then gracefully drop the state when
 your program exits, thereby closing the database connection and flushing
 any changes to disk.
 
@@ -109,14 +110,14 @@ if lifetime.try_drop().is_err() {
 
 # Drop Behavior
 
-After initializing the state with [`State::init`] or [`State::try_init`],
-you will receive a [`StateLifetime`]. This acts as the "lifetime" of your
-state; if this value is dropped, your state will be dropped with it,
-**provided that there are no currently held references to the state.**
+After initializing the state with [`StateManager::init`] or
+[`StateManager::try_init`], you will receive a [`StateLifetime`]. This acts as
+the "lifetime" of your state; if this value is dropped, your state will be
+dropped with it, **provided that there are no currently held references to the state.**
 
 If there are still held references to the state, nothing will happen. The
 values held within the state will not be dropped until the corresponding
-[`State`] is also dropped. Note that if your [`State`] is stored
+[`StateManager`] is also dropped. Note that if your [`StateManager`] is stored
 in a `static` variable, **it will never be dropped** and your [`Drop`]
 implementations and destructors will therefore never be called.
 

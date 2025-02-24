@@ -1,10 +1,12 @@
 #![doc = include_str!("../README.md")]
 #![deny(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 const UNINITIALIZED: u8 = 0;
 const INITIALIZING: u8 = 1;
 const INITIALIZED: u8 = 2;
 
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 #[cfg(feature = "async")]
 mod r#async;
 mod lazy;
@@ -23,7 +25,9 @@ pub type State = manager::StateManager<AnyContext>;
 /// and get `async` lazy initialized global state (see
 /// [`StateRegistry::insert_async_lazy`])
 #[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub type AsyncState = manager::StateManager<AsyncOnlyContext>;
 
 #[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub use r#async::AsyncOnlyContext;

@@ -24,3 +24,7 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 name = "state_department"
 harness = false
 required-features = ["async"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

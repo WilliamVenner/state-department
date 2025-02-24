@@ -18,3 +18,9 @@ async-once-cell = { version = "0.5.4", optional = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "sync"] }
 tokio-test = "0.4"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "state_department"
+harness = false
+required-features = ["async"]

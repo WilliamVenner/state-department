@@ -31,16 +31,28 @@ jobs:
       - name: Commune with clippy
         run: cargo clippy --all ${{ matrix.features }} -- -D warnings
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
       - name: Run test suite
         run: cargo test ${{ matrix.features }}
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Setup cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
       - name: Check docs
         env:
           RUSTDOCFLAGS: -Dwarnings
-        run: cargo doc --all --no-deps ${{ matrix.features }}
+        run: cargo doc --all --no-deps --all-features
 
   miri:
     strategy:

@@ -15,6 +15,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         toolchain: [stable, beta]
+        features: ["--all-features", ""]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,20 +29,23 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Commune with clippy
-        run: cargo clippy --all -all-features -- -D warnings
+        run: cargo clippy --all ${{ matrix.features }} -- -D warnings
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run test suite
-        run: cargo test --all-features
+        run: cargo test ${{ matrix.features }}
 
       - name: Check docs
         env:
           RUSTDOCFLAGS: -Dwarnings
-        run: cargo doc --all --no-deps --all-features
+        run: cargo doc --all --no-deps ${{ matrix.features }}
 
   miri:
+    strategy:
+      matrix:
+        features: ["--all-features", ""]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,4 +59,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run miri
-        run: cargo miri test --all-features
+        run: cargo miri test ${{ matrix.features }}

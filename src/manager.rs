@@ -52,20 +52,21 @@ impl<R> StateManager<R> {
     where
         F: FnOnce(&mut StateRegistry<R>),
     {
-        self.try_init(|state| {
+        match self.try_init(|state| {
             init(state);
 
             Ok::<_, ()>(())
-        })
-        .unwrap()
+        }) {
+            Some(Ok(result)) => result,
+            Some(Err(_)) => unreachable!(),
+            None => panic!("State already initialized or is currently initializing"),
+        }
     }
 
     /// Initializes the [`StateManager`], giving you a **fallible** entrypoint
     /// for populating the state with your desired values.
     ///
-    /// # Panics
-    ///
-    /// * If the state has already been initialized.
+    /// Returns `None` if the [`StateManager`] is already initialized.
     ///
     /// # Example
     ///
@@ -78,19 +79,22 @@ impl<R> StateManager<R> {
     ///     Err("oh no!")
     /// });
     ///
-    /// assert!(lifetime.is_err());
+    /// assert!(lifetime.unwrap().is_err());
     /// ```
-    pub fn try_init<E, F>(&self, init: F) -> Result<StateLifetime<R>, E>
+    pub fn try_init<E, F>(&self, init: F) -> Option<Result<StateLifetime<R>, E>>
     where
         F: FnOnce(&mut StateRegistry<R>) -> Result<(), E>,
     {
-        self.start_init();
+        if !self.try_start_init() {
+            return None;
+        }
 
         let mut state = StateRegistry::default();
 
-        init(&mut state)?;
+        let result = init(&mut state);
+        let result = result.map(|_| self.finish_init(state));
 
-        Ok(self.finish_init(state))
+        Some(result)
     }
 
     /// Initializes the [`StateManager`] asynchronously, giving you an
@@ -125,22 +129,25 @@ impl<R> StateManager<R> {
     where
         F: AsyncFnOnce(&mut StateRegistry<R>),
     {
-        self.try_init_async(async |state| {
-            init(state).await;
+        match self
+            .try_init_async(async |state| {
+                init(state).await;
 
-            Ok::<_, ()>(())
-        })
-        .await
-        .unwrap()
+                Ok::<_, ()>(())
+            })
+            .await
+        {
+            Some(Ok(result)) => result,
+            Some(Err(_)) => unreachable!(),
+            None => panic!("State already initialized or is currently initializing"),
+        }
     }
 
     /// Initializes the [`StateManager`] asynchronously, giving you a
     /// **fallible** entrypoint for populating the state with your desired
     /// values in an asynchronous context.
     ///
-    /// # Panics
-    ///
-    /// * If the state has already been initialized.
+    /// Returns `None` if the [`StateManager`] is already initialized.
     ///
     /// # Example
     ///
@@ -155,35 +162,34 @@ impl<R> StateManager<R> {
     ///     Err("oh no!")
     /// });
     ///
-    /// assert!(lifetime.await.is_err());
+    /// assert!(lifetime.await.unwrap().is_err());
     /// # });
     /// ```
-    pub async fn try_init_async<E, F>(&self, init: F) -> Result<StateLifetime<R>, E>
+    pub async fn try_init_async<E, F>(&self, init: F) -> Option<Result<StateLifetime<R>, E>>
     where
         F: AsyncFnOnce(&mut StateRegistry<R>) -> Result<(), E>,
     {
-        self.start_init();
+        if !self.try_start_init() {
+            return None;
+        }
 
         let mut state = StateRegistry::default();
+        let result = init(&mut state).await;
+        let result = result.map(|_| self.finish_init(state));
 
-        init(&mut state).await?;
-
-        Ok(self.finish_init(state))
+        Some(result)
     }
 
-    fn start_init(&self) {
-        if self
-            .initialized
+    #[must_use = "returns whether the state can now be initialized"]
+    fn try_start_init(&self) -> bool {
+        self.initialized
             .compare_exchange(
                 UNINITIALIZED,
                 INITIALIZING,
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
             )
-            .is_err()
-        {
-            panic!("State already initialized or is currently initializing");
-        }
+            .is_ok()
     }
 
     fn finish_init(&self, mut state: StateRegistry<R>) -> StateLifetime<R> {

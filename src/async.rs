@@ -108,7 +108,7 @@ impl StateManager<AsyncOnlyContext> {
 
         let state = unsafe { (*self.state.get()).assume_init_ref() }.upgrade()?;
 
-        if let Some(value) = state.map.get(&TypeId::of::<T>()) {
+        if let Some(value) = state.get(&TypeId::of::<T>()) {
             let value = value.as_ref() as &dyn Any;
 
             if let Some(value) = value.downcast_ref::<T>() {
@@ -182,7 +182,7 @@ impl StateRegistry<AsyncOnlyContext> {
         T: Send + Sync + 'static,
         F: Future<Output = T> + Send + 'static,
     {
-        self.map.insert(
+        self.insert_(
             TypeId::of::<T>(),
             Box::new(AsyncLazyState {
                 init: UnsafeCell::new(Some(Box::pin(init))),

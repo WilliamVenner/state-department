@@ -259,11 +259,11 @@ impl<R> Drop for StateLifetime<R> {
             return;
         };
 
-        let Some(mut state) = Arc::into_inner(state) else {
+        let Some(state) = Arc::into_inner(state) else {
             return;
         };
 
-        state.map.clear();
+        drop(state);
     }
 }
 impl<R> std::fmt::Debug for StateLifetime<R> {
@@ -299,20 +299,113 @@ unsafe impl<T: Send + Sync + 'static, R> Sync for StateRef<'_, T, R> {}
 /// when initializing the [`StateManager`] via [`StateManager::init`] or
 /// [`StateManager::try_init`].
 pub struct StateRegistry<R> {
-    pub(crate) map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    drop_order: Vec<TypeId>,
     _phantom: PhantomData<R>,
 }
 impl<R> Default for StateRegistry<R> {
     fn default() -> Self {
         Self {
             map: HashMap::new(),
+            drop_order: Vec::new(),
             _phantom: PhantomData,
         }
     }
 }
 impl<R> StateRegistry<R> {
+    #[inline(always)]
+    pub(crate) fn get(&self, type_id: &TypeId) -> Option<&Box<dyn Any + Send + Sync>> {
+        self.map.get(type_id)
+    }
+
+    pub(crate) fn insert_(&mut self, type_id: TypeId, value: Box<dyn Any + Send + Sync>) {
+        self.map.insert(type_id, value);
+        self.drop_order.push(type_id);
+    }
+
     /// Inserts a value into the state.
     pub fn insert<T: Send + Sync + 'static>(&mut self, value: T) {
-        self.map.insert(TypeId::of::<T>(), Box::new(value));
+        self.insert_(TypeId::of::<T>(), Box::new(value));
     }
+}
+impl<R> Drop for StateRegistry<R> {
+    fn drop(&mut self) {
+        for type_id in self.drop_order.iter().rev() {
+            self.map.remove(type_id);
+        }
+    }
+}
+
+#[test]
+fn test_drop_order() {
+    let mut reg = StateRegistry::<crate::AnyContext>::default();
+
+    static DROP: AtomicU8 = AtomicU8::new(0);
+
+    struct Foo<const N: u8>;
+    impl<const N: u8> Drop for Foo<N> {
+        fn drop(&mut self) {
+            let drop = DROP.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+            if drop != N {
+                panic!("drop order is incorrect, expected {N}, got {drop}");
+            } else {
+                println!("dropped Foo<{N}>");
+            }
+        }
+    }
+
+    let d = Foo::<3>;
+    let c = Foo::<2>;
+    let b = Foo::<1>;
+    let a = Foo::<0>;
+
+    reg.map.insert(TypeId::of::<Foo<0>>(), Box::new(a));
+    reg.map.insert(TypeId::of::<Foo<1>>(), Box::new(b));
+    reg.map.insert(TypeId::of::<Foo<2>>(), Box::new(c));
+    reg.map.insert(TypeId::of::<Foo<3>>(), Box::new(d));
+
+    reg.drop_order.push(TypeId::of::<Foo<3>>());
+    reg.drop_order.push(TypeId::of::<Foo<2>>());
+    reg.drop_order.push(TypeId::of::<Foo<1>>());
+    reg.drop_order.push(TypeId::of::<Foo<0>>());
+
+    drop(reg);
+}
+
+#[test]
+fn test_drop_order_rev() {
+    let mut reg = StateRegistry::<crate::AnyContext>::default();
+
+    static DROP: AtomicU8 = AtomicU8::new(0);
+
+    struct Foo<const N: u8>;
+    impl<const N: u8> Drop for Foo<N> {
+        fn drop(&mut self) {
+            let drop = DROP.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+            if drop != N {
+                panic!("drop order is incorrect, expected {N}, got {drop}");
+            } else {
+                println!("dropped Foo<{N}>");
+            }
+        }
+    }
+
+    let d = Foo::<3>;
+    let c = Foo::<2>;
+    let b = Foo::<1>;
+    let a = Foo::<0>;
+
+    reg.map.insert(TypeId::of::<Foo<3>>(), Box::new(d));
+    reg.map.insert(TypeId::of::<Foo<2>>(), Box::new(c));
+    reg.map.insert(TypeId::of::<Foo<1>>(), Box::new(b));
+    reg.map.insert(TypeId::of::<Foo<0>>(), Box::new(a));
+
+    reg.drop_order.push(TypeId::of::<Foo<3>>());
+    reg.drop_order.push(TypeId::of::<Foo<2>>());
+    reg.drop_order.push(TypeId::of::<Foo<1>>());
+    reg.drop_order.push(TypeId::of::<Foo<0>>());
+
+    drop(reg);
 }

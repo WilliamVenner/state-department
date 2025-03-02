@@ -126,3 +126,9 @@ Because in most cases this is considered a bug in the program,
 yourself at the end of your program via [`StateLifetime::try_drop`].
 This gives you an opportunity to raise an error, log a message, or otherwise
 handle the situation where there are still held references to your state.
+
+# Drop Order
+
+Items added to the state are dropped in the reverse order in which they were
+added. I.e., the last item added to the state will be the first item dropped
+and so on.

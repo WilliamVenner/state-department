@@ -35,7 +35,7 @@ impl<R> StateRegistry<R> {
         T: Send + Sync + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
-        self.map.insert(
+        self.insert_(
             TypeId::of::<T>(),
             Box::new(LazyState {
                 init: UnsafeCell::new(Some(Box::new(init))),

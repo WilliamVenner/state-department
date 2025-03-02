@@ -97,7 +97,7 @@ impl StateManager<AnyContext> {
 
         let state = unsafe { (*self.state.get()).assume_init_ref() }.upgrade()?;
 
-        let value: &T = state.map.get(&TypeId::of::<T>()).and_then(|v| {
+        let value: &T = state.get(&TypeId::of::<T>()).and_then(|v| {
             let v = v.as_ref() as &dyn Any;
 
             v.downcast_ref::<T>()
@@ -320,6 +320,68 @@ fn test_state_get_inside_init() {
 
         let _ = state.get::<()>();
     });
+}
+
+#[test]
+fn test_state_get_inside_drop() {
+    static STATE: StateManager<AnyContext> = StateManager::<AnyContext>::new();
+
+    struct Foo {
+        bar: i32,
+    }
+    impl Drop for Foo {
+        fn drop(&mut self) {
+            assert!(STATE.try_get::<Foo>().is_none());
+        }
+    }
+
+    let state = STATE.init(|state| {
+        state.insert(Foo { bar: 42 });
+    });
+
+    let foo = STATE.get::<Foo>();
+
+    assert_eq!(foo.bar, 42);
+
+    drop(foo);
+
+    drop(state);
+}
+
+#[test]
+fn test_state_init_inside_drop() {
+    static STATE: StateManager<AnyContext> = StateManager::<AnyContext>::new();
+
+    struct Foo {
+        bar: i32,
+    }
+    impl Drop for Foo {
+        fn drop(&mut self) {
+            assert!(STATE.try_get::<Foo>().is_none());
+
+            let state = STATE.try_init(|state| {
+                state.insert(Foo { bar: 42 });
+
+                Ok::<_, ()>(())
+            });
+
+            assert!(state.is_none());
+
+            assert!(STATE.try_get::<Foo>().is_none());
+        }
+    }
+
+    let state = STATE.init(|state| {
+        state.insert(Foo { bar: 42 });
+    });
+
+    let foo = STATE.get::<Foo>();
+
+    assert_eq!(foo.bar, 42);
+
+    drop(foo);
+
+    drop(state);
 }
 
 #[test]
